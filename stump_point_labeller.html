@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stump Point Labeller</title>
+<!--
+  Mark the 12 stump points on every image of "Merged both wicket dataset" and save them in the same label format as
+  "Takneek Video Dataset 8-12 Points":  one line per wicket, "class cx cy w h  x y 2 x y 2 ... (6 points)", all values
+  normalised 0-1, class 0 = far wicket (S points), class 1 = near wicket (B points).
+  Open this file in Chrome or Edge, click "Open dataset folder" and pick the folder that contains images/ and labels/.
+  Output goes to <folder>/labels_12pts/<image name>.txt. The original labels/ folder is only read, never changed.
+-->
+<style>
+  :root{--bg:#f4f5f7;--panel:#ffffff;--ink:#1b2027;--muted:#5b6672;--line:#d8dde3;--far:#c98a00;--near:#1f6feb;
+        --ok:#1a7f37;--warn:#b35900;--accent:#1f6feb;--canvas:#20252b}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1217;--panel:#171c23;--ink:#e6eaef;--muted:#98a3af;
+        --line:#2b333d;--far:#ffc531;--near:#58a6ff;--ok:#3fb950;--warn:#e3a008;--accent:#58a6ff;--canvas:#0a0d11}}
+  :root[data-theme="dark"]{--bg:#0e1217;--panel:#171c23;--ink:#e6eaef;--muted:#98a3af;--line:#2b333d;--far:#ffc531;
+        --near:#58a6ff;--ok:#3fb950;--warn:#e3a008;--accent:#58a6ff;--canvas:#0a0d11}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .app{display:grid;grid-template-columns:1fr 340px;height:100vh}
+  .stage{position:relative;background:var(--canvas);min-width:0}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none}
+  .side{background:var(--panel);border-left:1px solid var(--line);padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+  h1{font-size:16px;margin:0}
+  .muted{color:var(--muted)}
+  .small{font-size:12px}
+  button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 10px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button:disabled{opacity:.45;cursor:default}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row>*{flex:0 0 auto}
+  .grow{flex:1 1 auto!important}
+  .next{border:2px solid var(--line);border-radius:8px;padding:10px 12px}
+  .next b{font-size:15px}
+  .next.far{border-color:var(--far)} .next.near{border-color:var(--near)} .next.done{border-color:var(--ok)}
+  .list{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;margin:0;padding:0;list-style:none}
+  .list li{display:flex;gap:6px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer}
+  .list li:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  .dot{width:10px;height:10px;border-radius:50%;border:2px solid currentColor;flex:0 0 auto}
+  .list li.S{color:var(--far)} .list li.B{color:var(--near)}
+  .list li.set .dot{background:currentColor}
+  .list li span.n{color:var(--ink)}
+  .list li.armed{outline:2px solid var(--accent)}
+  .bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--ok);width:0}
+  .banner{border-radius:6px;padding:8px 10px;background:color-mix(in srgb,var(--warn) 16%,transparent);border:1px solid var(--warn);display:none}
+  .toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#000c;color:#fff;padding:8px 14px;border-radius:8px;display:none;max-width:80%}
+  .welcome{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;color:#e6eaef;text-align:center;padding:24px}
+  .welcome p{max-width:520px;margin:0;color:#b8c2cc}
+  label.chk{display:flex;gap:6px;align-items:center}
+  input[type=number]{width:72px;font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+  kbd{font:11px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:4px;padding:0 4px;background:var(--bg)}
+  @media (max-width:820px){.app{grid-template-columns:1fr;grid-template-rows:55vh 1fr;height:auto}.side{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage" id="stage">
+    <canvas id="cv"></canvas>
+    <div class="welcome" id="welcome">
+      <h1 style="color:#fff;font-size:22px">Stump Point Labeller</h1>
+      <p>Click the 12 stump points of every image: the far wicket first (striker end), then the near wicket (bowler end).
+         Each wicket: left, middle, right stump &mdash; head (top) then base (bottom).</p>
+      <button class="primary" id="openBtn">Open dataset folder</button>
+      <p class="small" id="supportMsg">Pick the folder that contains <b>images</b> and <b>labels</b>. Works in Chrome and Edge.</p>
+    </div>
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <aside class="side">
+    <div>
+      <h1>Stump Point Labeller</h1>
+      <div class="muted small" id="fileInfo">No folder opened</div>
+    </div>
+    <div class="bar"><i id="barFill"></i></div>
+    <div class="small muted" id="progress"></div>
+
+    <div class="banner" id="banner"></div>
+    <div class="next" id="nextBox"><span class="muted">Open a folder to begin.</span></div>
+
+    <ul class="list" id="list"></ul>
+
+    <div class="row">
+      <button class="primary grow" id="saveBtn" disabled>Save &amp; next <kbd>Enter</kbd></button>
+    </div>
+    <div class="row">
+      <button id="prevBtn" disabled>&larr; Prev <kbd>A</kbd></button>
+      <button id="nextBtn" disabled>Next &rarr; <kbd>D</kbd></button>
+      <button id="undoBtn" disabled>Undo <kbd>Backspace</kbd></button>
+      <button id="clearBtn" disabled>Clear <kbd>C</kbd></button>
+    </div>
+    <div class="row">
+      <button id="copyBtn" disabled title="Copy the points of the last saved image">Copy last saved points <kbd>P</kbd></button>
+      <button id="clipBtn" disabled title="Copy these 12 points to every unlabelled image of the same clip">Apply to rest of clip</button>
+    </div>
+
+    <details>
+      <summary>Options</summary>
+      <div style="display:flex;flex-direction:column;gap:8px;padding-top:8px">
+        <label class="chk"><input type="checkbox" id="skipDone" checked> Skip images that are already saved</label>
+        <label class="chk"><input type="checkbox" id="prefill" checked> Pre-fill from the last saved image of the same clip</label>
+        <div class="row">My images: from <input type="number" id="rangeLo" min="1" value="1"> to <input type="number" id="rangeHi" min="1" value="1"></div>
+        <div class="small muted">Use the range to split the work between members (image numbers, in file-name order).</div>
+      </div>
+    </details>
+
+    <details>
+      <summary>How to use</summary>
+      <ol class="small" style="padding-left:18px;margin:8px 0 0">
+        <li>Click the points in the order shown under "Next point".</li>
+        <li>Mouse wheel zooms, hold <kbd>Space</kbd> and drag (or middle button) to pan, <kbd>0</kbd> fits the image.</li>
+        <li>Drag a placed point to correct it. Right-click a point to remove it. Click a name in the list, then click the image, to re-place that point.</li>
+        <li>The dashed boxes are the boxes already in <i>labels/</i>. The saved label uses the box that contains each wicket's points; if none does, a box is calculated from the points.</li>
+        <li><b>Save &amp; next</b> writes <i>labels_12pts/&lt;image&gt;.txt</i> (needs all 12 points).</li>
+      </ol>
+    </details>
+  </aside>
+</div>
+
+<script>
+"use strict";
+const NAMES = ["SLH","SLB","SMH","SMB","SRH","SRB","BLH","BLB","BMH","BMB","BRH","BRB"];   // S* = far wicket (class 0), B* = near wicket (class 1)
+const STUMP = {L:"LEFT", M:"MIDDLE", R:"RIGHT"}, PART = {H:"HEAD (top)", B:"BASE (bottom)"};
+const IMG_EXT = /\.(jpe?g|png|bmp|webp)$/i;
+
+// ---------- pure label helpers (no DOM) ----------
+// <pure>
+function parseBoxes(text) {                                  // labels/*.txt of the merged dataset: "class cx cy w h"
+  return text.split("\n").map(l => l.trim().split(/\s+/).map(Number))
+    .filter(v => v.length >= 5 && v.slice(0, 5).every(Number.isFinite))
+    .map(v => ({cls: v[0], cx: v[1], cy: v[2], w: v[3], h: v[4]}));
+}
+function parsePoseLabel(text) {                              // a saved label: "class cx cy w h x y v ..." per wicket
+  const points = Array(12).fill(null), boxes = [];
+  for (const l of text.split("\n")) {
+    const v = l.trim().split(/\s+/).map(Number);
+    if (v.length < 23 || !v.every(Number.isFinite)) continue;
+    boxes.push({cls: v[0], cx: v[1], cy: v[2], w: v[3], h: v[4]});
+    for (let i = 0; i < 6; i++) if (v[7 + 3 * i] > 0 && (v[0] === 0 || v[0] === 1)) points[v[0] * 6 + i] = {x: v[5 + 3 * i], y: v[6 + 3 * i]};
+  }
+  return {points, boxes};
+}
+function inBox(b, p, tol = 0.01) {
+  return Math.abs(p.x - b.cx) <= b.w / 2 + tol && Math.abs(p.y - b.cy) <= b.h / 2 + tol;
+}
+function pickBox(boxes, pts) {                               // the box holding most of the wicket's points (smaller wins a tie)
+  let best = null, bestScore = -Infinity;
+  for (const b of boxes) {
+    const n = pts.filter(p => inBox(b, p)).length, s = n - b.w * b.h;
+    if (n >= 4 && s > bestScore) { bestScore = s; best = b; }
+  }
+  return best;
+}
+function computedBox(pts, W, H) {                            // same padding rule as yolo_pose.wicket_box
+  const xs = pts.map(p => p.x * W), ys = pts.map(p => p.y * H);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const bw = x1 - x0, bh = y1 - y0;
+  const px = Math.max(0.25 * bw, 0.12 * bh, 4), py = Math.max(0.06 * bh, 3);
+  x0 = Math.max(0, x0 - px); x1 = Math.min(W, x1 + px); y0 = Math.max(0, y0 - py); y1 = Math.min(H, y1 + py);
+  return {cx: (x0 + x1) / 2 / W, cy: (y0 + y1) / 2 / H, w: (x1 - x0) / W, h: (y1 - y0) / H};
+}
+const f6 = v => v.toFixed(6);
+function formatLabel(points, boxes, W, H) {                  // -> {text, src:["file"|"computed", ...]} (far line, near line)
+  const lines = [], src = [];
+  for (const c of [0, 1]) {
+    const pts = points.slice(c * 6, c * 6 + 6);
+    let b = pickBox(boxes, pts);
+    src.push(b ? "file" : "computed");
+    if (!b) b = computedBox(pts, W, H);
+    lines.push([c, f6(b.cx), f6(b.cy), f6(b.w), f6(b.h), ...pts.flatMap(p => [f6(p.x), f6(p.y), 2])].join(" "));
+  }
+  return {text: lines.join("\n") + "\n", src};
+}
+function checkPoints(points) {                               // soft sanity warnings
+  const w = [];
+  for (const [e, name] of [[0, "far"], [6, "near"]]) {
+    for (const s of [0, 2, 4]) { const h = points[e + s], b = points[e + s + 1]; if (h.y >= b.y) w.push(`${name} wicket: ${NAMES[e + s]} is not above ${NAMES[e + s + 1]}`); }
+    if (!(points[e].x < points[e + 2].x && points[e + 2].x < points[e + 4].x)) w.push(`${name} wicket: left / middle / right heads are not in left-to-right order`);
+  }
+  return w;
+}
+const clipOf = name => name.replace(/-\d+_jpg\.rf\.[0-9a-f]+\.\w+$/i, "");
+// </pure>
+
+// ---------- state ----------
+let rootDir, imgDir, lblDir, outDir;
+let files = [];                  // image file names, sorted
+const done = new Set();          // stems that already have a saved label
+let idx = -1, bmp = null, W = 0, H = 0;
+let boxes = [], points = Array(12).fill(null), armed = null, dirty = false, prefilled = false;
+let lastSaved = null, lastSavedClip = null;
+let view = {s: 1, ox: 0, oy: 0, fit: 1};
+let mouse = null, drag = null, pan = null, pend = null, spaceDown = false;
+
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+const stem = n => n.replace(/\.[^.]+$/, "");
+
+function toast(msg, ms = 2600) {
+  const t = $("toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = "none", ms);
+}
+
+// ---------- folder / files ----------
+async function openFolder() {
+  try {
+    rootDir = await window.showDirectoryPicker({mode: "readwrite"});
+    imgDir = await rootDir.getDirectoryHandle("images");
+  } catch (e) {
+    if (e.name !== "AbortError") toast("Pick the folder that contains an 'images' folder (and a 'labels' folder).", 5000);
+    return;
+  }
+  try { lblDir = await rootDir.getDirectoryHandle("labels"); } catch { lblDir = null; }
+  outDir = await rootDir.getDirectoryHandle("labels_12pts", {create: true});
+  files = []; done.clear();
+  for await (const [name, h] of imgDir.entries()) if (h.kind === "file" && IMG_EXT.test(name) && !name.startsWith(".")) files.push(name);
+  files.sort();
+  for await (const [name, h] of outDir.entries()) if (h.kind === "file" && name.endsWith(".txt") && !name.startsWith(".")) done.add(stem(name));
+  if (!files.length) { toast("No images found in the 'images' folder."); return; }
+  $("rangeLo").value = 1; $("rangeLo").max = files.length; $("rangeHi").value = files.length; $("rangeHi").max = files.length;
+  $("welcome").style.display = "none";
+  ["saveBtn","prevBtn","nextBtn","undoBtn","clearBtn","copyBtn","clipBtn"].forEach(i => $(i).disabled = false);
+  const first = step(-1, 1) ;
+  await show(first >= 0 ? first : 0);
+}
+
+const range = () => [Math.max(1, +$("rangeLo").value || 1) - 1, Math.min(files.length, +$("rangeHi").value || files.length) - 1];
+function step(from, dir) {                                   // next index in my range (skipping saved ones if asked)
+  const [lo, hi] = range();
+  for (let i = from + dir; i >= lo && i <= hi; i += dir) if (!$("skipDone").checked || !done.has(stem(files[i]))) return i;
+  return -1;
+}
+
+async function readText(dir, name) {
+  try { return await (await (await dir.getFileHandle(name)).getFile()).text(); } catch { return null; }
+}
+
+async function show(i) {
+  idx = i;
+  const name = files[i], st = stem(name);
+  bmp = await createImageBitmap(await (await imgDir.getFileHandle(name)).getFile());
+  W = bmp.width; H = bmp.height;
+  points = Array(12).fill(null); boxes = []; armed = null; dirty = false; prefilled = false;
+  const saved = await readText(outDir, st + ".txt");
+  if (saved) {
+    const p = parsePoseLabel(saved); points = p.points; boxes = p.boxes;
+    const orig = lblDir ? await readText(lblDir, st + ".txt") : null;
+    if (orig) boxes = parseBoxes(orig);                      // keep showing the original boxes
+  } else {
+    const orig = lblDir ? await readText(lblDir, st + ".txt") : null;
+    if (orig) boxes = parseBoxes(orig);
+    if ($("prefill").checked && lastSaved && lastSavedClip === clipOf(name)) {
+      points = lastSaved.map(p => ({...p})); prefilled = true;
+    }
+  }
+  fitView(); refresh(); draw();
+}
+
+// ---------- saving ----------
+async function writeLabel(dirName, imgW, imgH, pts, boxList) {
+  const {text, src} = formatLabel(pts, boxList, imgW, imgH);
+  const w = await (await outDir.getFileHandle(stem(dirName) + ".txt", {create: true})).createWritable();
+  await w.write(text); await w.close();
+  done.add(stem(dirName));
+  return src;
+}
+
+async function save() {
+  if (points.some(p => !p)) { toast(`Place all 12 points first (${points.filter(Boolean).length}/12 placed).`); return; }
+  const warn = checkPoints(points);
+  if (warn.length && !confirm("Please check these points:\n\n- " + warn.join("\n- ") + "\n\nSave anyway?")) return;
+  const src = await writeLabel(files[idx], W, H, points, boxes);
+  lastSaved = points.map(p => ({...p})); lastSavedClip = clipOf(files[idx]); dirty = false;
+  const comp = [["far", src[0]], ["near", src[1]]].filter(x => x[1] === "computed").map(x => x[0]);
+  toast("Saved." + (comp.length ? ` Box calculated from the points for the ${comp.join(" and ")} wicket (no matching box in labels/).` : ""));
+  const n = step(idx, 1);
+  if (n >= 0) await show(n); else { refresh(); toast("Saved. No more images in your range.", 4000); }
+}
+
+async function applyToClip() {
+  if (points.some(p => !p)) { toast("Place all 12 points first."); return; }
+  const clip = clipOf(files[idx]);
+  const [lo, hi] = range();
+  const targets = [];
+  for (let i = lo; i <= hi; i++) if (i !== idx && clipOf(files[i]) === clip && !done.has(stem(files[i]))) targets.push(i);
+  if (!targets.length) { toast("No unlabelled images left in this clip (within your range)."); return; }
+  if (!confirm(`Copy these 12 points to ${targets.length} other unlabelled image(s) of clip "${clip}"?\n\nOnly do this when the camera does not move in this clip. Each image keeps its own boxes. You can still correct any image later.`)) return;
+  if (!(await saveCurrentQuiet())) return;
+  let n = 0, comp = 0;
+  for (const i of targets) {
+    const name = files[i];
+    const b = await createImageBitmap(await (await imgDir.getFileHandle(name)).getFile());
+    const orig = lblDir ? await readText(lblDir, stem(name) + ".txt") : null;
+    const src = await writeLabel(name, b.width, b.height, points, orig ? parseBoxes(orig) : []);
+    comp += src.filter(s => s === "computed").length; b.close(); n++;
+    if (n % 20 === 0) toast(`Applying... ${n}/${targets.length}`, 800);
+  }
+  toast(`Applied to ${n} image(s).` + (comp ? ` ${comp} box(es) were calculated from the points.` : ""), 4500);
+  refresh();
+}
+async function saveCurrentQuiet() {
+  const warn = checkPoints(points);
+  if (warn.length && !confirm("Please check these points:\n\n- " + warn.join("\n- ") + "\n\nContinue anyway?")) return false;
+  await writeLabel(files[idx], W, H, points, boxes);
+  lastSaved = points.map(p => ({...p})); lastSavedClip = clipOf(files[idx]); dirty = false;
+  return true;
+}
+
+// ---------- view ----------
+function resize() {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(r.width * d)); cv.height = Math.max(1, Math.round(r.height * d));
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  if (bmp) { const keep = view.s / view.fit; fitView(); view.s = view.fit * keep; }
+  draw();
+}
+function fitView() {
+  const r = cv.getBoundingClientRect();
+  view.fit = view.s = Math.min(r.width / W, r.height / H);
+  view.ox = (r.width - W * view.s) / 2; view.oy = (r.height - H * view.s) / 2;
+}
+const toScreen = p => ({x: view.ox + p.x * W * view.s, y: view.oy + p.y * H * view.s});
+const toImg = (sx, sy) => ({x: (sx - view.ox) / (W * view.s), y: (sy - view.oy) / (H * view.s)});
+function zoomAt(sx, sy, f) {
+  const s = Math.min(view.fit * 60, Math.max(view.fit * 0.6, view.s * f)), k = s / view.s;
+  view.ox = sx - (sx - view.ox) * k; view.oy = sy - (sy - view.oy) * k; view.s = s; draw();
+}
+
+// ---------- drawing ----------
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function draw() {
+  const r = cv.getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+  if (!bmp) return;
+  ctx.imageSmoothingEnabled = view.s < 3;
+  ctx.drawImage(bmp, view.ox, view.oy, W * view.s, H * view.s);
+  const far = css("--far"), near = css("--near");
+  ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.strokeStyle = "#fff";
+  for (const b of boxes) ctx.strokeRect(view.ox + (b.cx - b.w / 2) * W * view.s, view.oy + (b.cy - b.h / 2) * H * view.s, b.w * W * view.s, b.h * H * view.s);
+  ctx.setLineDash([]);
+  for (const e of [0, 6]) {
+    ctx.strokeStyle = e ? near : far; ctx.lineWidth = 2;
+    for (const s of [0, 2, 4]) {
+      const a = points[e + s], b = points[e + s + 1];
+      if (a && b) { const A = toScreen(a), B = toScreen(b); ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); }
+    }
+  }
+  const act = activeIndex();
+  points.forEach((p, i) => {
+    if (!p) return;
+    const q = toScreen(p), col = i < 6 ? far : near;
+    ctx.fillStyle = col; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 5, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.font = "600 12px system-ui"; ctx.lineWidth = 3; ctx.strokeStyle = "#000a"; ctx.strokeText(NAMES[i], q.x + 8, q.y - 7);
+    ctx.fillStyle = "#fff"; ctx.fillText(NAMES[i], q.x + 8, q.y - 7);
+  });
+  if (mouse && !drag && !pan) {                              // crosshair + magnifier
+    ctx.strokeStyle = act !== null && act < 6 ? far : near; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(mouse.x - 10, mouse.y); ctx.lineTo(mouse.x + 10, mouse.y); ctx.moveTo(mouse.x, mouse.y - 10); ctx.lineTo(mouse.x, mouse.y + 10); ctx.stroke();
+  }
+  if (mouse) loupe();
+}
+function loupe() {
+  const p = toImg(mouse.x, mouse.y); if (p.x < 0 || p.y < 0 || p.x > 1 || p.y > 1) return;
+  const size = 150, zoom = 6, sw = size / zoom, r = cv.getBoundingClientRect();
+  const x = mouse.x > r.width - size - 30 ? 12 : r.width - size - 12, y = 12;
+  ctx.save(); ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#000"; ctx.fillRect(x - 2, y - 2, size + 4, size + 4);
+  ctx.drawImage(bmp, p.x * W - sw / 2, p.y * H - sw / 2, sw, sw, x, y, size, size);
+  ctx.strokeStyle = "#ff3b30"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x + size / 2, y); ctx.lineTo(x + size / 2, y + size); ctx.moveTo(x, y + size / 2); ctx.lineTo(x + size, y + size / 2); ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- points ----------
+function activeIndex() {
+  if (armed !== null) return armed;
+  const i = points.findIndex(p => !p); return i < 0 ? null : i;
+}
+function hit(sx, sy) {
+  let best = -1, bd = 7;
+  points.forEach((p, i) => { if (!p) return; const q = toScreen(p), d = Math.hypot(q.x - sx, q.y - sy); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
+const clamp01 = v => Math.min(1, Math.max(0, v));
+function mark(i) { dirty = true; prefilled = false; armed = null; refresh(); draw(); }
+
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("pointerdown", e => {
+  if (!bmp) return;
+  const r = cv.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+  cv.setPointerCapture(e.pointerId);
+  if (e.button === 1 || spaceDown || e.shiftKey) { pan = {x: sx, y: sy, ox: view.ox, oy: view.oy}; cv.style.cursor = "grabbing"; return; }
+  const h = hit(sx, sy);
+  if (e.button === 2) { if (h >= 0) { points[h] = null; mark(); } return; }
+  if (e.button !== 0) return;
+  pend = {h, x: sx, y: sy};                                  // decided on move (drag a point) or on release (place a point)
+});
+cv.addEventListener("pointermove", e => {
+  const r = cv.getBoundingClientRect(); mouse = {x: e.clientX - r.left, y: e.clientY - r.top};
+  if (pan) { view.ox = pan.ox + mouse.x - pan.x; view.oy = pan.oy + mouse.y - pan.y; }
+  else if (pend && pend.h >= 0 && Math.hypot(mouse.x - pend.x, mouse.y - pend.y) > 3) { drag = pend.h; pend = null; }
+  if (!pan && drag !== null) { const p = toImg(mouse.x, mouse.y); points[drag] = {x: clamp01(p.x), y: clamp01(p.y)}; dirty = true; prefilled = false; }
+  draw();
+});
+cv.addEventListener("pointerup", () => {
+  if (pend) {                                                // a click without moving: place the next point
+    const p = toImg(pend.x, pend.y), a = activeIndex();
+    if (p.x >= 0 && p.y >= 0 && p.x <= 1 && p.y <= 1) {
+      if (a === null) toast("All 12 points are placed. Drag a point to adjust it, or press Enter to save.");
+      else { points[a] = {x: p.x, y: p.y}; mark(); }
+    }
+  }
+  if (drag !== null) refresh();
+  drag = null; pan = null; pend = null; cv.style.cursor = "crosshair";
+});
+cv.addEventListener("pointerleave", () => { mouse = null; draw(); });
+cv.addEventListener("wheel", e => {
+  e.preventDefault(); const r = cv.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.18 : 1 / 1.18);
+}, {passive: false});
+
+function undo() {
+  for (let i = 11; i >= 0; i--) if (points[i]) { points[i] = null; break; }
+  armed = null; dirty = true; refresh(); draw();
+}
+function clearAll() { points = Array(12).fill(null); armed = null; dirty = true; prefilled = false; refresh(); draw(); }
+
+// ---------- panel ----------
+function refresh() {
+  const placed = points.filter(Boolean).length, a = activeIndex();
+  if (idx >= 0) {
+    const [lo, hi] = range(), mine = []; for (let i = lo; i <= hi; i++) mine.push(i);
+    const dn = mine.filter(i => done.has(stem(files[i]))).length;
+    $("fileInfo").textContent = `${idx + 1} / ${files.length}  ·  ${files[idx]}  ·  ${W}×${H}  ·  clip ${clipOf(files[idx])}`;
+    $("progress").textContent = `Saved ${dn} of ${mine.length} in my range` + (done.has(stem(files[idx])) ? "  ·  this image is saved" : "");
+    $("barFill").style.width = (mine.length ? 100 * dn / mine.length : 0) + "%";
+    const b = $("banner");
+    b.style.display = prefilled ? "block" : "none";
+    b.textContent = "Points pre-filled from the last saved image of this clip. Check them against this image (drag to correct), then save.";
+  }
+  const box = $("nextBox");
+  if (a === null) {
+    box.className = "next done"; box.innerHTML = `<b>All 12 points placed.</b><div class="muted small">Check them, then press <kbd>Enter</kbd> to save.</div>`;
+  } else {
+    const n = NAMES[a], far = a < 6;
+    box.className = "next " + (far ? "far" : "near");
+    box.innerHTML = `<div class="muted small">Next point (${placed}/12 placed)${armed !== null ? " — re-placing" : ""}</div>` +
+      `<b>${n}</b> &nbsp;${far ? "FAR wicket (striker end)" : "NEAR wicket (bowler end)"}<br>` +
+      `<span>${STUMP[n[1]]} stump · ${PART[n[2]]}</span>`;
+  }
+  $("list").innerHTML = NAMES.map((n, i) =>
+    `<li class="${n[0]} ${points[i] ? "set" : ""} ${armed === i ? "armed" : ""}" data-i="${i}"><span class="dot"></span><span class="n">${n}</span></li>`).join("");
+}
+$("list").addEventListener("click", e => {
+  const li = e.target.closest("li"); if (!li || !bmp) return;
+  armed = +li.dataset.i; refresh(); draw();
+});
+
+// ---------- buttons / keys ----------
+$("openBtn").onclick = openFolder;
+$("saveBtn").onclick = save;
+$("undoBtn").onclick = undo;
+$("clearBtn").onclick = clearAll;
+$("clipBtn").onclick = applyToClip;
+$("copyBtn").onclick = () => {
+  if (!lastSaved) { toast("Nothing saved yet in this session."); return; }
+  points = lastSaved.map(p => ({...p})); armed = null; dirty = true; prefilled = true; refresh(); draw();
+};
+async function go(dir) {
+  if (idx < 0) return;
+  if (dirty && !confirm("This image has unsaved changes. Leave without saving?")) return;
+  const wasSkip = $("skipDone").checked; $("skipDone").checked = false;      // manual navigation visits every image
+  const n = step(idx, dir); $("skipDone").checked = wasSkip;
+  if (n >= 0) await show(n); else toast("No more images in that direction (within your range).");
+}
+$("prevBtn").onclick = () => go(-1);
+$("nextBtn").onclick = () => go(1);
+$("rangeLo").onchange = $("rangeHi").onchange = () => { if (idx >= 0) refresh(); };
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { spaceDown = true; e.preventDefault(); cv.style.cursor = "grab"; return; }
+  if (!bmp) return;
+  const k = e.key.toLowerCase();
+  if (k === "enter") save();
+  else if (k === "backspace" || (k === "z" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); undo(); }
+  else if (k === "a" || k === "arrowleft") go(-1);
+  else if (k === "d" || k === "arrowright") go(1);
+  else if (k === "c") clearAll();
+  else if (k === "p") $("copyBtn").click();
+  else if (k === "0") { fitView(); draw(); }
+  else if (k === "+" || k === "=") { const r = cv.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }
+  else if (k === "-") { const r = cv.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }
+  else if (k === "escape") { armed = null; refresh(); draw(); }
+});
+window.addEventListener("keyup", e => { if (e.code === "Space") { spaceDown = false; cv.style.cursor = "crosshair"; } });
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("resize", resize);
+if (!window.showDirectoryPicker) {
+  $("openBtn").disabled = true;
+  $("supportMsg").textContent = "This browser cannot save into a folder. Open this page in Chrome or Edge.";
+}
+resize(); refresh();
+</script>
+</body>
+</html>
